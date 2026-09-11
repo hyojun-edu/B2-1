@@ -1,0 +1,4 @@
+.budget_data.json
+__pycache__/
+*.py[cod]
+.pytest_cache/
