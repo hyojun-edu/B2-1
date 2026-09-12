@@ -11,8 +11,9 @@ from functools import wraps
 from pathlib import Path
 from typing import ParamSpec, TypeVar
 
-from .models import Transaction
-from .repositories import BudgetRepository, CategoryRepository, TransactionRepository
+from calendar import monthrange
+from .models import RecurringTransaction, Transaction
+from .repositories import BudgetRepository, CategoryRepository, RecurringRepository, TransactionRepository
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -48,10 +49,12 @@ class BudgetService:
         transaction_repository: TransactionRepository,
         category_repository: CategoryRepository,
         budget_repository: BudgetRepository,
+        recurring_repository: RecurringRepository,
     ) -> None:
         self.transaction_repository = transaction_repository
         self.category_repository = category_repository
         self.budget_repository = budget_repository
+        self.recurring_repository = recurring_repository
 
     @logged_timed
     def add(self, transaction: Transaction) -> None:
@@ -198,3 +201,24 @@ class BudgetService:
                 except (ValueError, KeyError, TypeError):
                     skipped += 1
         return imported, skipped
+
+    def add_recurring(self, recurring: RecurringTransaction) -> None:
+        if recurring.category not in self.category_repository.list():
+            raise ValueError(f"등록되지 않은 카테고리입니다: {recurring.category}")
+        self.recurring_repository.append(recurring)
+
+    def generate_recurring(self, month: str) -> int:
+        validate_month(month)
+        last_day = monthrange(int(month[:4]), int(month[5:]))[1]
+        generated = 0
+        for recurring in self.recurring_repository.stream():
+            day = min(recurring.day, last_day)
+            transaction_date = f"{month}-{day:02d}"
+            if any(
+                row.recurring_id == recurring.id and row.date == transaction_date
+                for row in self.transaction_repository.stream()
+            ):
+                continue
+            self.add(Transaction(new_id(), recurring.type, transaction_date, recurring.amount, recurring.category, recurring.memo, recurring.tags, recurring.id))
+            generated += 1
+        return generated

@@ -1,10 +1,12 @@
 import json
 import os
 import tempfile
+import shutil
+from datetime import datetime
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
-from .models import Transaction
+from .models import RecurringTransaction, Transaction
 
 DEFAULT_DATA_DIR = Path("data")
 DEFAULT_CATEGORIES = ("food", "transport", "rent", "salary")
@@ -50,6 +52,8 @@ def _atomic_write(path: Path, rows: Iterator[dict[str, object]]) -> None:
 class TransactionRepository:
     def __init__(self, data_dir: Path) -> None:
         self.path = data_dir / "transactions.jsonl"
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.touch(exist_ok=True)
 
     def stream(self) -> Iterator[Transaction]:
         for row in _read_jsonl(self.path):
@@ -98,6 +102,8 @@ class CategoryRepository:
 class BudgetRepository:
     def __init__(self, data_dir: Path) -> None:
         self.path = data_dir / "budgets.jsonl"
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.touch(exist_ok=True)
 
     def get(self, month: str) -> int | None:
         return next((int(row["amount"]) for row in _read_jsonl(self.path) if row.get("month") == month), None)
@@ -106,3 +112,31 @@ class BudgetRepository:
         budgets = {str(row["month"]): int(row["amount"]) for row in _read_jsonl(self.path)}
         budgets[month] = amount
         _atomic_write(self.path, ({"month": key, "amount": value} for key, value in sorted(budgets.items())))
+
+
+class RecurringRepository:
+    def __init__(self, data_dir: Path) -> None:
+        self.path = data_dir / "recurring.jsonl"
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.touch(exist_ok=True)
+
+    def stream(self) -> Iterator[RecurringTransaction]:
+        for row in _read_jsonl(self.path):
+            yield RecurringTransaction(
+                str(row["id"]), int(row["day"]), str(row["type"]),
+                int(row["amount"]), str(row["category"]), str(row.get("memo", "")),
+                tuple(str(tag) for tag in (row.get("tags") or [])),
+            )
+
+    def append(self, recurring: RecurringTransaction) -> None:
+        with self.path.open("a", encoding="utf-8") as file:
+            file.write(json.dumps(recurring.to_dict(), ensure_ascii=False) + "\n")
+
+
+def backup(data_dir: Path) -> Path:
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    destination = data_dir / f"backup-{timestamp}"
+    destination.mkdir(parents=True, exist_ok=False)
+    for source in data_dir.glob("*.jsonl"):
+        shutil.copy2(source, destination / source.name)
+    return destination

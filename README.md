@@ -26,6 +26,9 @@ python3 -m budget_app update --id TX-ABC123 --amount 20000 --memo 수정
 python3 -m budget_app delete --id TX-ABC123
 python3 -m budget_app export --out export.csv --month 2024-01
 python3 -m budget_app import --from import.csv
+python3 -m budget_app recurring add --day 25 --type expense --category rent --amount 500000 --memo 월세
+python3 -m budget_app recurring generate --month 2024-02
+python3 -m budget_app backup
 ```
 
 `add`는 기본적으로 날짜, 타입, 카테고리, 금액, 메모, 태그를 순서대로 대화형 입력받습니다. `update`는 옵션 방식으로 고정했으며 `--id`와 수정할 필드를 함께 입력합니다. 목록과 검색 결과는 최신순입니다. 사용 중인 카테고리는 삭제할 수 없습니다.
@@ -39,6 +42,7 @@ python3 -m budget_app import --from import.csv
 | `data/transactions.jsonl` | 거래의 `id`, `type`, `date`, `amount`, `category`, `memo`, `tags` |
 | `data/categories.jsonl` | 카테고리의 `name` |
 | `data/budgets.jsonl` | 월별 `month`, `amount` 예산 |
+| `data/recurring.jsonl` | 반복 내역의 `id`, `day`, `type`, `amount`, `category`, `memo`, `tags` |
 
 수정·삭제·카테고리 변경·예산 변경은 임시 파일에 기록한 뒤 원자적으로 교체하여 중간 상태가 남을 가능성을 줄입니다. 거래 수정·삭제도 JSONL 전체를 리스트로 로드하지 않고 한 행씩 임시 파일에 재작성합니다. 거래 추가는 JSONL 끝에 한 줄을 추가합니다.
 
@@ -102,3 +106,11 @@ def summary(
 실제 서비스의 `stream() -> Iterator[Transaction]`, `summary() -> tuple[int, int, list[tuple[str, int]]]` 같은 선언도 함수 사이의 데이터 계약을 명확하게 하여 자동 완성, 코드 리뷰, 변경 영향 확인에 도움을 줍니다.
 
 오류는 스택트레이스 대신 `[오류]` 원인과 `[힌트]` 해결 방향으로 출력되며, 정상 종료는 0, 오류 종료는 1을 반환합니다.
+
+## 보너스 기능
+
+`backup`은 `data/backup-YYYYMMDD-HHMMSS/` 디렉터리를 만들고 현재 JSONL 저장 파일을 복사합니다. 백업 시점의 데이터를 별도로 보존할 수 있습니다.
+
+`recurring add`로 매월 반복할 거래 템플릿을 저장하고, `recurring generate --month YYYY-MM`으로 해당 월의 거래를 생성합니다. 31일처럼 해당 월에 없는 날짜는 그 달의 마지막 날로 보정하며, 같은 반복 내역을 같은 월에 다시 생성해도 중복 거래를 만들지 않습니다.
+
+목록과 검색은 고정 폭 열을 사용해 표 형태로 출력합니다. 거래를 전체 리스트로 만들지 않고 한 행씩 출력하므로 `--limit`을 사용할 때도 스트리밍 처리를 유지합니다.

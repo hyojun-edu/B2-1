@@ -1,11 +1,10 @@
 import argparse
 import logging
-from datetime import date
 from pathlib import Path
 
-from .models import Transaction
+from .models import RecurringTransaction, Transaction
 from .service import BudgetService, new_id, validate_month
-from .repositories import BudgetRepository, CategoryRepository, TransactionRepository
+from .repositories import BudgetRepository, CategoryRepository, RecurringRepository, TransactionRepository, backup
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -22,6 +21,11 @@ def build_parser() -> argparse.ArgumentParser:
     delete = sub.add_parser("delete", help="거래 삭제"); delete.add_argument("--id", required=True)
     export = sub.add_parser("export", help="CSV 내보내기"); export.add_argument("--out", required=True, type=Path); add_filters(export); export.add_argument("--month")
     imp = sub.add_parser("import", help="CSV 가져오기"); imp.add_argument("--from", dest="source", required=True, type=Path)
+    recurring = sub.add_parser("recurring", help="반복 내역 관리")
+    recurring_sub = recurring.add_subparsers(dest="recurring_command", required=True)
+    recurring_add = recurring_sub.add_parser("add", help="반복 내역 추가"); recurring_add.add_argument("--day", required=True, type=int); recurring_add.add_argument("--type", required=True, choices=["income", "expense"]); recurring_add.add_argument("--category", required=True); recurring_add.add_argument("--amount", required=True, type=int); recurring_add.add_argument("--memo", default=""); recurring_add.add_argument("--tags", default="")
+    recurring_generate = recurring_sub.add_parser("generate", help="특정 월의 반복 내역 생성"); recurring_generate.add_argument("--month", required=True)
+    sub.add_parser("backup", help="저장 파일 백업")
     return parser
 
 
@@ -38,11 +42,17 @@ def make_service(data_dir: Path) -> BudgetService:
         transaction_repository=TransactionRepository(data_dir),
         category_repository=CategoryRepository(data_dir),
         budget_repository=BudgetRepository(data_dir),
+        recurring_repository=RecurringRepository(data_dir),
     )
 
 
 def print_transaction(row: Transaction) -> None:
-    print(f"{row.id} | {row.date} | {row.type} | {row.category} | {row.amount} | {row.memo} | {','.join(row.tags)}")
+    print(f"{row.id:<16} | {row.date} | {row.type:<7} | {row.category:<12} | {row.amount:>10} | {row.memo:<20} | {','.join(row.tags)}")
+
+
+def print_table_header() -> None:
+    print("id               | date       | type    | category     |      amount | memo                 | tags")
+    print("-" * 105)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -60,6 +70,7 @@ def main(argv: list[str] | None = None) -> int:
             transaction = Transaction(new_id(), transaction_type, transaction_date, amount, category_name, memo, tags)
             service.add(transaction); print(f"[저장 완료] id={transaction.id}")
         elif args.command in {"list", "search"}:
+            print_table_header()
             limit = args.limit if args.command == "list" else None
             for index, row in enumerate(service.stream(**filters(args))):
                 if limit is not None and index >= limit:
@@ -94,6 +105,14 @@ def main(argv: list[str] | None = None) -> int:
             count = service.export_csv(args.out, **selected); print(f"[완료] {args.out} ({count} records)")
         elif args.command == "import":
             imported, skipped = service.import_csv(args.source); print(f"[완료] imported={imported}, skipped={skipped}")
+        elif args.command == "recurring":
+            if args.recurring_command == "add":
+                recurring = RecurringTransaction(new_id(), args.day, args.type, args.amount, args.category, args.memo, tuple(tag.strip() for tag in args.tags.split(",") if tag.strip()))
+                service.add_recurring(recurring); print(f"[저장 완료] recurring_id={recurring.id}")
+            else:
+                generated = service.generate_recurring(args.month); print(f"[완료] generated={generated}")
+        elif args.command == "backup":
+            print(f"[백업 완료] {backup(args.data_dir)}")
         return 0
     except (ValueError, RuntimeError, OSError) as exc:
         print(f"[오류] {exc}\n[힌트] 입력값과 저장 경로를 확인하세요.")
