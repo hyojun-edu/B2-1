@@ -174,15 +174,23 @@ class BudgetService:
 
     def export_csv(self, output: Path, **filters: str | None) -> int:
         count = 0
-        with output.open("w", newline="", encoding="utf-8-sig") as file:
-            writer = csv.DictWriter(file, fieldnames=["id", "date", "type", "category", "amount", "memo", "tags"])
-            writer.writeheader()
-            for row in self.stream(**filters):
-                data = row.to_dict()
-                data["tags"] = ",".join(row.tags)
-                writer.writerow(data)
-                count += 1
-        return count
+        output.parent.mkdir(parents=True, exist_ok=True)
+        fd, temp_name = tempfile.mkstemp(prefix=f".{output.name}.", dir=output.parent, text=True)
+        os.close(fd)
+        staged = Path(temp_name)
+        try:
+            with staged.open("w", newline="", encoding="utf-8-sig") as file:
+                writer = csv.DictWriter(file, fieldnames=["id", "date", "type", "category", "amount", "memo", "tags"])
+                writer.writeheader()
+                for row in self.stream(**filters):
+                    data = row.to_dict()
+                    data["tags"] = ",".join(row.tags)
+                    writer.writerow(data)
+                    count += 1
+            os.replace(staged, output)
+            return count
+        finally:
+            staged.unlink(missing_ok=True)
 
     def import_csv(self, source: Path) -> tuple[int, int]:
         """CSV 전체를 staging 파일에 반영한 뒤 성공 시에만 원자적으로 교체한다."""
@@ -241,15 +249,26 @@ class BudgetService:
     def generate_recurring(self, month: str) -> int:
         validate_month(month)
         last_day = monthrange(int(month[:4]), int(month[5:]))[1]
-        generated = 0
+        generated_rows: list[Transaction] = []
+        existing_generated = {
+            (row.recurring_id, row.date)
+            for row in self.transaction_repository.stream()
+            if row.recurring_id is not None
+        }
         for recurring in self.recurring_repository.stream():
             day = min(recurring.day, last_day)
             transaction_date = f"{month}-{day:02d}"
-            if any(
-                row.recurring_id == recurring.id and row.date == transaction_date
-                for row in self.transaction_repository.stream()
-            ):
+            if (recurring.id, transaction_date) in existing_generated:
                 continue
-            self.add(Transaction(new_id(), recurring.type, transaction_date, recurring.amount, recurring.category, recurring.memo, recurring.tags, recurring.id))
-            generated += 1
-        return generated
+            generated_rows.append(Transaction(new_id(), recurring.type, transaction_date, recurring.amount, recurring.category, recurring.memo, recurring.tags, recurring.id))
+            existing_generated.add((recurring.id, transaction_date))
+
+        if not generated_rows:
+            return 0
+
+        def rows() -> Iterator[Transaction]:
+            yield from self.transaction_repository.stream()
+            yield from generated_rows
+
+        self.transaction_repository.replace(rows())
+        return len(generated_rows)

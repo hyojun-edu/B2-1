@@ -81,9 +81,12 @@ class TransactionRepository:
         return found
 
     def append(self, transaction: Transaction) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as file:
-            file.write(json.dumps(transaction.to_dict(), ensure_ascii=False) + "\n")
+        # 기존 내용을 임시 파일에 복사한 뒤 새 행까지 성공하면 교체한다.
+        def rows() -> Iterator[dict[str, object]]:
+            yield from _read_jsonl(self.path)
+            yield transaction.to_dict()
+
+        _atomic_write(self.path, rows())
 
 
 class CategoryRepository:
@@ -129,8 +132,11 @@ class RecurringRepository:
             )
 
     def append(self, recurring: RecurringTransaction) -> None:
-        with self.path.open("a", encoding="utf-8") as file:
-            file.write(json.dumps(recurring.to_dict(), ensure_ascii=False) + "\n")
+        def rows() -> Iterator[dict[str, object]]:
+            yield from _read_jsonl(self.path)
+            yield recurring.to_dict()
+
+        _atomic_write(self.path, rows())
 
 
 def backup(data_dir: Path) -> Path:
