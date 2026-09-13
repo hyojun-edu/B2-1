@@ -2,6 +2,8 @@ import csv
 import heapq
 import json
 import logging
+import os
+import shutil
 import tempfile
 import time
 import uuid
@@ -183,24 +185,53 @@ class BudgetService:
         return count
 
     def import_csv(self, source: Path) -> tuple[int, int]:
-        imported = skipped = 0
-        with source.open(newline="", encoding="utf-8-sig") as file:
-            reader = csv.DictReader(file)
-            required = {"date", "type", "category", "amount"}
-            if not required.issubset(reader.fieldnames or set()):
-                raise ValueError("CSV 헤더에는 date, type, category, amount가 필요합니다.")
-            for row in reader:
-                try:
-                    transaction = Transaction(
-                        row.get("id") or new_id(), row["type"].strip(), row["date"].strip(),
-                        int(row["amount"]), row["category"].strip(), row.get("memo", "").strip(),
-                        tuple(tag.strip() for tag in row.get("tags", "").split(",") if tag.strip()),
-                    )
-                    self.add(transaction)
+        """CSV 전체를 staging 파일에 반영한 뒤 성공 시에만 원자적으로 교체한다."""
+        path = self.transaction_repository.path
+        categories = set(self.category_repository.list())
+        existing_ids = {row.id for row in self.transaction_repository.stream()}
+        imported = 0
+        staged_path: Path | None = None
+
+        try:
+            fd, temp_name = tempfile.mkstemp(
+                prefix=f".{path.name}.import-", dir=path.parent, text=True
+            )
+            staged_path = Path(temp_name)
+            os.close(fd)
+            shutil.copy2(path, staged_path)
+
+            with source.open(newline="", encoding="utf-8-sig") as file, staged_path.open(
+                "a", encoding="utf-8"
+            ) as staged:
+                reader = csv.DictReader(file)
+                required = {"date", "type", "category", "amount"}
+                if not required.issubset(reader.fieldnames or set()):
+                    raise ValueError("CSV 헤더에는 date, type, category, amount가 필요합니다.")
+
+                for row_number, row in enumerate(reader, start=2):
+                    try:
+                        transaction = Transaction(
+                            row.get("id") or new_id(), row["type"].strip(), row["date"].strip(),
+                            int(row["amount"]), row["category"].strip(), row.get("memo", "").strip(),
+                            tuple(tag.strip() for tag in row.get("tags", "").split(",") if tag.strip()),
+                        )
+                        if transaction.category not in categories:
+                            raise ValueError(f"등록되지 않은 카테고리입니다: {transaction.category}")
+                        if transaction.id in existing_ids:
+                            raise ValueError(f"중복된 거래 id입니다: {transaction.id}")
+                    except (ValueError, KeyError, TypeError) as exc:
+                        raise ValueError(f"CSV {row_number}행이 올바르지 않습니다: {exc}") from exc
+
+                    staged.write(json.dumps(transaction.to_dict(), ensure_ascii=False) + "\n")
+                    existing_ids.add(transaction.id)
                     imported += 1
-                except (ValueError, KeyError, TypeError):
-                    skipped += 1
-        return imported, skipped
+
+            os.replace(staged_path, path)
+            staged_path = None
+            return imported, 0
+        finally:
+            if staged_path is not None:
+                staged_path.unlink(missing_ok=True)
 
     def add_recurring(self, recurring: RecurringTransaction) -> None:
         if recurring.category not in self.category_repository.list():
