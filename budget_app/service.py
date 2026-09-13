@@ -192,13 +192,16 @@ class BudgetService:
         finally:
             staged.unlink(missing_ok=True)
 
-    def import_csv(self, source: Path) -> tuple[int, int]:
-        """CSV 전체를 staging 파일에 반영한 뒤 성공 시에만 원자적으로 교체한다."""
+    def import_csv(self, source: Path) -> tuple[int, int, Path | None]:
+        """CSV 전체를 검증하고, 오류가 없을 때만 원자적으로 반영하며 report를 만든다."""
         path = self.transaction_repository.path
         categories = set(self.category_repository.list())
         existing_ids = {row.id for row in self.transaction_repository.stream()}
-        imported = 0
+        validated = 0
+        invalid_rows = 0
+        errors: list[tuple[int, str, dict[str, str | None]]] = []
         staged_path: Path | None = None
+        report_path: Path | None = None
 
         try:
             fd, temp_name = tempfile.mkstemp(
@@ -228,15 +231,49 @@ class BudgetService:
                         if transaction.id in existing_ids:
                             raise ValueError(f"중복된 거래 id입니다: {transaction.id}")
                     except (ValueError, KeyError, TypeError) as exc:
-                        raise ValueError(f"CSV {row_number}행이 올바르지 않습니다: {exc}") from exc
+                        invalid_rows += 1
+                        errors.append((row_number, str(exc), row))
+                        continue
 
                     staged.write(json.dumps(transaction.to_dict(), ensure_ascii=False) + "\n")
                     existing_ids.add(transaction.id)
-                    imported += 1
+                    validated += 1
+
+            if errors:
+                report_path = source.with_name(f"{source.stem}.import-report.csv")
+                report_temp: Path | None = None
+                try:
+                    fd, temp_name = tempfile.mkstemp(
+                        prefix=f".{report_path.name}.", dir=report_path.parent, text=True
+                    )
+                    report_temp = Path(temp_name)
+                    os.close(fd)
+                    with report_temp.open("w", newline="", encoding="utf-8-sig") as report_file:
+                        writer = csv.DictWriter(
+                            report_file, fieldnames=["row_number", "error", "raw_row"]
+                        )
+                        writer.writeheader()
+                        for row_number, error, row in errors:
+                            writer.writerow(
+                                {
+                                    "row_number": row_number,
+                                    "error": error,
+                                    "raw_row": json.dumps(row, ensure_ascii=False),
+                                }
+                            )
+                    os.replace(report_temp, report_path)
+                    report_temp = None
+                finally:
+                    if report_temp is not None:
+                        report_temp.unlink(missing_ok=True)
+
+            if errors:
+                return 0, invalid_rows, report_path
 
             os.replace(staged_path, path)
             staged_path = None
-            return imported, 0
+
+            return validated, 0, report_path
         finally:
             if staged_path is not None:
                 staged_path.unlink(missing_ok=True)

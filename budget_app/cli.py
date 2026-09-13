@@ -104,7 +104,12 @@ def main(argv: list[str] | None = None) -> int:
             if args.month: validate_month(args.month); selected["from"] = f"{args.month}-01"; selected["to"] = f"{args.month}-31"
             count = service.export_csv(args.out, **selected); print(f"[완료] {args.out} ({count} records)")
         elif args.command == "import":
-            imported, skipped = service.import_csv(args.source); print(f"[완료] imported={imported}, skipped={skipped}")
+            imported, invalid_rows, report_path = service.import_csv(args.source)
+            if invalid_rows:
+                print(f"[실패] imported=0, invalid_rows={invalid_rows} (전체 반영 취소)")
+                print(f"[안내] 불량 행 리포트를 확인하세요: {report_path}")
+                return 1
+            print(f"[완료] imported={imported}, invalid_rows=0")
         elif args.command == "recurring":
             if args.recurring_command == "add":
                 recurring = RecurringTransaction(new_id(), args.day, args.type, args.amount, args.category, args.memo, tuple(tag.strip() for tag in args.tags.split(",") if tag.strip()))
